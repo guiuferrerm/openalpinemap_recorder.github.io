@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GPS Recorder - openalpinemap</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#317EFB">
+  <style>
+    body { font-family: sans-serif; margin: 20px; text-align: center; }
+    input, select, button, .section { margin: 10px 0; padding: 10px; font-size: 16px; }
+    .section { border: 1px solid #ddd; border-radius: 8px; }
+    #log { margin-top: 20px; padding: 10px; border: 1px solid #ccc; max-height: 200px; overflow-y: scroll; text-align: left; }
+    .status { font-weight: bold; margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+
+  <h1>GPS Recorder - openalpinemap</h1>
+
+  <div class="section">
+    <h2>1. Load Existing Map</h2>
+    <input type="file" id="mapFile" accept=".json">
+    <button id="loadButton">Load Map File</button>
+  </div>
+
+  <div class="section">
+    <h2>2. Record New Data</h2>
+    <div class="status">Status: <span id="status">Idle</span></div>
+    <div id="coords">Lat: --, Lon: --, Alt: --</div>
+
+    <input type="text" id="featureName" placeholder="Feature Name">
+    <select id="featureType">
+      <option value="way">Way</option>
+      <option value="area">Area</option>
+      <option value="point">Point</option>
+    </select>
+    <input type="number" id="distance" value="10" placeholder="Save every (m)">
+
+    <button id="startButton">Start Recording</button>
+    <button id="endFeatureButton" disabled>End Feature</button>
+    <button id="pauseButton" disabled>Pause Tracking</button>
+  </div>
+
+  <div class="section">
+    <h2>3. Finalize</h2>
+    <button id="endSessionButton">End Session & Save Map</button>
+  </div>
+
+  <div class="section">
+    <h2>Log</h2>
+    <div id="log"></div>
+  </div>
+
+  <script>
+    let watchID;
+    let isTracking = false;
+    let isRecordingFeature = false;
+    let lastPosition = null;
+    let recordedNodeIds = [];
+    let nextNodeId = 1;
+    let nextPointId = 1;
+    let nextWayId = 1;
+    let nextAreaId = 1;
+
+    let geoData = {
+      "initbbox": { "minLat": 42.27, "maxLat": 42.45, "minLon": 2.05, "maxLon": 2.30 },
+      "nodes": [],
+      "points": [],
+      "ways": [],
+      "areas": []
+    };
+    
+    function updateStatus(text) {
+      document.getElementById('status').textContent = text;
+    }
+
+    function logMessage(text) {
+      const log = document.getElementById('log');
+      log.innerHTML += `<p>${new Date().toLocaleTimeString()} - ${text}</p>`;
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function haversineDistance(coords1, coords2) {
+      const toRad = (x) => x * Math.PI / 180;
+      const R = 6371e3; // Earth's radius in meters
+      const lat1 = toRad(coords1.latitude);
+      const lon1 = toRad(coords1.longitude);
+      const lat2 = toRad(coords2.latitude);
+      const lon2 = toRad(coords2.longitude);
+      const deltaLat = lat2 - lat1;
+      const deltaLon = lon2 - lon1;
+      const a = Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+                Math.cos(lat1) * Math.cos(lat2) *
+                Math.sin(deltaLon / 2) * Math.sin(deltaLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c; // Distance in meters
+    }
+
+    function findNextIds() {
+      let maxNodeId = 0;
+      if (geoData.nodes && geoData.nodes.length > 0) {
+        geoData.nodes.forEach(node => { if (node.id > maxNodeId) maxNodeId = node.id; });
+      }
+      nextNodeId = maxNodeId + 1;
+
+      let maxPointId = 0;
+      if (geoData.points && geoData.points.length > 0) {
+        geoData.points.forEach(point => { if (point.id > maxPointId) maxPointId = point.id; });
+      }
+      nextPointId = maxPointId + 1;
+
+      let maxWayId = 0;
+      if (geoData.ways && geoData.ways.length > 0) {
+        geoData.ways.forEach(way => { if (way.id > maxWayId) maxWayId = way.id; });
+      }
+      nextWayId = maxWayId + 1;
+
+      let maxAreaId = 0;
+      if (geoData.areas && geoData.areas.length > 0) {
+        geoData.areas.forEach(area => { if (area.id > maxAreaId) maxAreaId = area.id; });
+      }
+      nextAreaId = maxAreaId + 1;
+    }
+
+    function onPositionUpdate(position) {
+      const newLat = position.coords.latitude;
+      const newLon = position.coords.longitude;
+      const elev_m = position.coords.altitude !== null ? Math.round(position.coords.altitude) : "N/A";
+      const featureType = document.getElementById('featureType').value;
+      const coordsDiv = document.getElementById('coords');
+      coordsDiv.innerHTML = `Lat: ${newLat.toFixed(6)}, Lon: ${newLon.toFixed(6)}, Alt: ${elev_m}`;
+      
+      if (isRecordingFeature) {
+        if (featureType === 'point') {
+          if (recordedNodeIds.length === 0) {
+            recordNode(position.coords);
+            endFeature();
+          }
+        } else {
+          const distanceInterval = parseFloat(document.getElementById('distance').value);
+          if (lastPosition === null || haversineDistance(lastPosition.coords, position.coords) >= distanceInterval) {
+            recordNode(position.coords);
+            lastPosition = position;
+          }
+        }
+      }
+    }
+
+    function recordNode(coords) {
+      const elev_m = coords.altitude !== null ? Math.round(coords.altitude) : null;
+      const node = { id: nextNodeId++, lat: coords.latitude, lon: coords.longitude, elev_m: elev_m };
+      recordedNodeIds.push(node.id);
+      geoData.nodes.push(node);
+      logMessage(`Recorded: id ${node.id}, lat ${node.lat.toFixed(6)}, lon ${node.lon.toFixed(6)}, elev ${elev_m || 'N/A'}`);
+    }
+
+    function onError(error) {
+      switch(error.code) {
+        case error.PERMISSION_DENIED:
+          logMessage("User denied the request for Geolocation. Please allow GPS in browser settings.");
+          break;
+        case error.POSITION_UNAVAILABLE:
+          logMessage("Location information is unavailable.");
+          break;
+        case error.TIMEOUT:
+          logMessage("The request to get user location timed out.");
+          break;
+        case error.UNKNOWN_ERROR:
+          logMessage("An unknown error occurred.");
+          break;
+      }
+      updateStatus('Error');
+    }
+
+    function startRecording() {
+      const featureName = document.getElementById('featureName').value.trim();
+      const featureType = document.getElementById('featureType').value;
+      if (!featureName) { alert("Please enter a feature name."); return; }
+      if (featureType !== 'point') {
+        const distance = parseFloat(document.getElementById('distance').value);
+        if (isNaN(distance) || distance <= 0) { alert("Please enter a valid positive number for the distance interval."); return; }
+      }
+      if (!isTracking) {
+        if (navigator.geolocation) {
+          const options = { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 };
+          watchID = navigator.geolocation.watchPosition(onPositionUpdate, onError, options);
+          isTracking = true;
+          logMessage("Started GPS tracking session.");
+          document.getElementById('pauseButton').disabled = false;
+          document.getElementById('endSessionButton').disabled = false;
+        } else {
+          logMessage("Geolocation is not supported by this browser.");
+          updateStatus('Error'); return;
+        }
+      }
+      recordedNodeIds = [];
+      lastPosition = null;
+      isRecordingFeature = true;
+      updateStatus('Recording Feature');
+      document.getElementById('startButton').disabled = true;
+      document.getElementById('endFeatureButton').disabled = false;
+      document.getElementById('featureName').disabled = true;
+      document.getElementById('featureType').disabled = true;
+      document.getElementById('distance').disabled = true;
+      logMessage(`Started recording a new ${featureType} called "${featureName}".`);
+    }
+    
+    function endFeature() {
+      isRecordingFeature = false;
+      updateStatus('Ready for next feature');
+      document.getElementById('startButton').disabled = false;
+      document.getElementById('endFeatureButton').disabled = true;
+      document.getElementById('featureName').disabled = false;
+      document.getElementById('featureType').disabled = false;
+      document.getElementById('distance').disabled = false;
+      const featureName = document.getElementById('featureName').value.trim();
+      const featureType = document.getElementById('featureType').value;
+      if (recordedNodeIds.length > 0) {
+        let featureObject = { "id": 0, "name": featureName, "type": featureType };
+        if (featureType === 'point') {
+          featureObject.id = nextPointId++;
+          featureObject.node = recordedNodeIds[0];
+          geoData.points.push(featureObject);
+        } else {
+          featureObject.nodes = recordedNodeIds;
+          if (featureType === 'way') {
+            featureObject.id = nextWayId++;
+            geoData.ways.push(featureObject);
+          } else if (featureType === 'area') {
+            featureObject.id = nextAreaId++;
+            if (recordedNodeIds[0] !== recordedNodeIds[recordedNodeIds.length - 1]) {
+              featureObject.nodes.push(recordedNodeIds[0]);
+            }
+            geoData.areas.push(featureObject);
+          }
+        }
+        logMessage(`Feature "${featureName}" (id: ${featureObject.id}) added to the map data.`);
+      } else {
+        logMessage("No data was recorded for this feature.");
+      }
+    }
+
+    function pauseTracking() {
+      if (isRecordingFeature) { alert("Please end the current feature before pausing tracking."); return; }
+      isTracking = !isTracking;
+      if (isTracking) {
+        updateStatus('Tracking');
+        document.getElementById('pauseButton').textContent = 'Pause Tracking';
+        watchID = navigator.geolocation.watchPosition(onPositionUpdate, onError, { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 });
+        logMessage("GPS tracking resumed.");
+      } else {
+        updateStatus('Paused');
+        document.getElementById('pauseButton').textContent = 'Resume Tracking';
+        navigator.geolocation.clearWatch(watchID);
+        logMessage("GPS tracking paused.");
+      }
+    }
+
+    function endSessionAndSave() {
+      if (isRecordingFeature) { alert("Please end the current feature first."); return; }
+      if (watchID) { navigator.geolocation.clearWatch(watchID); watchID = null; }
+      isTracking = false;
+      updateStatus('Idle');
+      document.getElementById('startButton').disabled = false;
+      document.getElementById('endFeatureButton').disabled = true;
+      document.getElementById('pauseButton').disabled = true;
+      document.getElementById('endSessionButton').disabled = true;
+      document.getElementById('featureName').disabled = false;
+      document.getElementById('featureType').disabled = false;
+      document.getElementById('distance').disabled = false;
+      logMessage("Session ended. All new features are saved to the file.");
+      if (geoData.nodes.length > 0) downloadFile();
+      else logMessage("No new data was recorded in this session.");
+    }
+
+    function downloadFile() {
+      const dataStr = JSON.stringify(geoData, null, 2);
+      const blob = new Blob([dataStr], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'map.json';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      logMessage("File 'map.json' downloaded.");
+    }
+    
+    document.getElementById('startButton').addEventListener('click', startRecording);
+    document.getElementById('endFeatureButton').addEventListener('click', endFeature);
+    document.getElementById('pauseButton').addEventListener('click', pauseTracking);
+    document.getElementById('endSessionButton').addEventListener('click', endSessionAndSave);
+    document.getElementById('loadButton').addEventListener('click', () => {
+      const fileInput = document.getElementById('mapFile');
+      if (fileInput.files.length === 0) { alert("Please select a file to load."); return; }
+      const file = fileInput.files[0];
+      const reader = new FileReader();
+      reader.onload = function(event) {
+        try {
+          const loadedData = JSON.parse(event.target.result);
+          geoData = loadedData; findNextIds();
+          logMessage("Map file loaded successfully."); alert("Map file loaded. You can now record new data.");
+        } catch (e) {
+          logMessage("Failed to parse JSON file."); alert("Failed to load file. Check the log.");
+        }
+      };
+      reader.onerror = () => logMessage("Error reading file.");
+      reader.readAsText(file);
+    });
+  </script>
+
+  <!-- Service Worker Registration -->
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("service_worker.js")
+        .then(() => console.log("Service Worker registered"))
+        .catch(err => console.error("SW registration failed:", err));
+    }
+  </script>
+
+</body>
+</html>
