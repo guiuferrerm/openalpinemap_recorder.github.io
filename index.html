@@ -275,13 +275,38 @@
     }
 
     function downloadFile() {
-      const dataStr = JSON.stringify(geoData, null, 2);
+      const initbboxStr = JSON.stringify(geoData.initbbox, null, 2).replace(/\n/g, '\n  ');
+      const nodesStr = geoData.nodes.map(node => `    ${JSON.stringify(node)}`).join(',\n');
+      const pointsStr = geoData.points.map(point => `    ${JSON.stringify(point)}`).join(',\n');
+      const waysStr = geoData.ways.map(way => `    ${JSON.stringify(way)}`).join(',\n');
+      const areasStr = geoData.areas.map(area => `    ${JSON.stringify(area)}`).join(',\n');
+      
+      const dataStr = `{
+  "initbbox": ${initbboxStr},
+  "nodes": [
+${nodesStr}
+  ],
+  "points": [
+${pointsStr}
+  ],
+  "ways": [
+${waysStr}
+  ],
+  "areas": [
+${areasStr}
+  ]
+}`;
       const blob = new Blob([dataStr], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = 'map.json';
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      logMessage("File 'map.json' downloaded.");
+      const now = new Date();
+      const timestamp = now.getFullYear() + '-' + (now.getMonth() + 1).toString().padStart(2, '0') + '-' + now.getDate().toString().padStart(2, '0') + '_' + now.getHours().toString().padStart(2, '0') + '-' + now.getMinutes().toString().padStart(2, '0') + '-' + now.getSeconds().toString().padStart(2, '0');
+      a.href = url;
+      a.download = `map_${timestamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      logMessage("File saved with a unique name. Please check your Downloads folder and manage the file manually.");
     }
     
     document.getElementById('startButton').addEventListener('click', startRecording);
@@ -307,7 +332,6 @@
     });
   </script>
 
-  <!-- Service Worker Registration -->
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("service_worker.js")
