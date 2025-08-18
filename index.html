@@ -62,6 +62,7 @@
     let nextPointId = 1;
     let nextWayId = 1;
     let nextAreaId = 1;
+    let loadedFileName = null;
 
     let geoData = {
       "initbbox": { "minLat": 42.27, "maxLat": 42.45, "minLon": 2.05, "maxLon": 2.30 },
@@ -277,7 +278,7 @@
     function downloadFile() {
       const initbboxStr = JSON.stringify(geoData.initbbox, null, 2).replace(/\n/g, '\n  ');
       const nodesStr = geoData.nodes.map(node => `    ${JSON.stringify(node)}`).join(',\n');
-      const pointsStr = geoData.points.map(point => `    ${JSON.stringify(point)}`).join(',\n');
+      const pointsStr = geoData.points.map(point => `    ${JSON.stringify(point)}`).join(',, \n');
       const waysStr = geoData.ways.map(way => `    ${JSON.stringify(way)}`).join(',\n');
       const areasStr = geoData.areas.map(area => `    ${JSON.stringify(area)}`).join(',\n');
       
@@ -301,8 +302,10 @@ ${areasStr}
       const a = document.createElement('a');
       const now = new Date();
       const timestamp = now.getFullYear() + '-' + (now.getMonth() + 1).toString().padStart(2, '0') + '-' + now.getDate().toString().padStart(2, '0') + '_' + now.getHours().toString().padStart(2, '0') + '-' + now.getMinutes().toString().padStart(2, '0') + '-' + now.getSeconds().toString().padStart(2, '0');
+      
+      const fileNamePrefix = loadedFileName ? `${loadedFileName}_modified` : 'map'; 
       a.href = url;
-      a.download = `map_${timestamp}.json`;
+      a.download = `${fileNamePrefix}_${timestamp}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -317,6 +320,7 @@ ${areasStr}
       const fileInput = document.getElementById('mapFile');
       if (fileInput.files.length === 0) { alert("Please select a file to load."); return; }
       const file = fileInput.files[0];
+      loadedFileName = file.name.replace(/\.json$/, '');
       const reader = new FileReader();
       reader.onload = function(event) {
         try {
