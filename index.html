@@ -133,17 +133,10 @@
       coordsDiv.innerHTML = `Lat: ${newLat.toFixed(6)}, Lon: ${newLon.toFixed(6)}, Alt: ${elev_m}`;
       
       if (isRecordingFeature) {
-        if (featureType === 'point') {
-          if (recordedNodeIds.length === 0) {
-            recordNode(position.coords);
-            endFeature();
-          }
-        } else {
-          const distanceInterval = parseFloat(document.getElementById('distance').value);
-          if (lastPosition === null || haversineDistance(lastPosition.coords, position.coords) >= distanceInterval) {
-            recordNode(position.coords);
-            lastPosition = position;
-          }
+        const distanceInterval = parseFloat(document.getElementById('distance').value);
+        if (lastPosition === null || haversineDistance(lastPosition.coords, position.coords) >= distanceInterval) {
+          recordNode(position.coords);
+          lastPosition = position;
         }
       }
     }
@@ -182,21 +175,36 @@
         const distance = parseFloat(document.getElementById('distance').value);
         if (isNaN(distance) || distance <= 0) { alert("Please enter a valid positive number for the distance interval."); return; }
       }
-      if (!isTracking) {
-        if (navigator.geolocation) {
-          const options = { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 };
-          watchID = navigator.geolocation.watchPosition(onPositionUpdate, onError, options);
-          isTracking = true;
-          logMessage("Started GPS tracking session.");
-          document.getElementById('pauseButton').disabled = false;
-          document.getElementById('endSessionButton').disabled = false;
-        } else {
+      
+      if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+              (position) => {
+                  recordNode(position.coords);
+                  lastPosition = position;
+                  startTrackingAndRecording();
+              },
+              onError,
+              { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+          );
+      } else {
           logMessage("Geolocation is not supported by this browser.");
-          updateStatus('Error'); return;
-        }
+          updateStatus('Error'); 
       }
-      recordedNodeIds = [];
-      lastPosition = null;
+    }
+
+    function startTrackingAndRecording() {
+      const featureName = document.getElementById('featureName').value.trim();
+      const featureType = document.getElementById('featureType').value;
+
+      if (!isTracking) {
+        const options = { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 };
+        watchID = navigator.geolocation.watchPosition(onPositionUpdate, onError, options);
+        isTracking = true;
+        logMessage("Started GPS tracking session.");
+        document.getElementById('pauseButton').disabled = false;
+        document.getElementById('endSessionButton').disabled = false;
+      }
+
       isRecordingFeature = true;
       updateStatus('Recording Feature');
       document.getElementById('startButton').disabled = true;
@@ -209,6 +217,26 @@
     
     function endFeature() {
       isRecordingFeature = false;
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            const currentCoords = position.coords;
+            const lastRecordedNode = geoData.nodes[geoData.nodes.length - 1];
+
+            if (!lastRecordedNode || haversineDistance(lastRecordedNode, currentCoords) > 0.1) {
+              recordNode(currentCoords);
+            }
+            processFeatureData();
+          },
+          onError,
+          { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+        );
+      } else {
+        processFeatureData();
+      }
+    }
+
+    function processFeatureData() {
       updateStatus('Ready for next feature');
       document.getElementById('startButton').disabled = false;
       document.getElementById('endFeatureButton').disabled = true;
@@ -217,6 +245,7 @@
       document.getElementById('distance').disabled = false;
       const featureName = document.getElementById('featureName').value.trim();
       const featureType = document.getElementById('featureType').value;
+
       if (recordedNodeIds.length > 0) {
         let featureObject = { "id": 0, "name": featureName, "type": featureType };
         if (featureType === 'point') {
@@ -240,6 +269,8 @@
       } else {
         logMessage("No data was recorded for this feature.");
       }
+      recordedNodeIds = [];
+      lastPosition = null;
     }
 
     function pauseTracking() {
@@ -278,7 +309,7 @@
     function downloadFile() {
       const initbboxStr = JSON.stringify(geoData.initbbox, null, 2).replace(/\n/g, '\n  ');
       const nodesStr = geoData.nodes.map(node => `    ${JSON.stringify(node)}`).join(',\n');
-      const pointsStr = geoData.points.map(point => `    ${JSON.stringify(point)}`).join(',, \n');
+      const pointsStr = geoData.points.map(point => `    ${JSON.stringify(point)}`).join(',\n');
       const waysStr = geoData.ways.map(way => `    ${JSON.stringify(way)}`).join(',\n');
       const areasStr = geoData.areas.map(area => `    ${JSON.stringify(area)}`).join(',\n');
       
